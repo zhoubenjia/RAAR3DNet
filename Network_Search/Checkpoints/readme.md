@@ -1,1 +1,2 @@
-
+- The results of network training will be saved here. 
+- The generated file format is: Search-EXP-time
