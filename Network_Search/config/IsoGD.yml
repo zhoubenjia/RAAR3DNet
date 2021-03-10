@@ -1,0 +1,30 @@
+common:
+  data: /disk2/yuanqi/frames
+  splits: /disk2/bjzhou/Dataset/IsoGD/dataset_splits
+
+  #-------basic Hyparameter----------
+  visname: 'IsoGD_Search'
+  num_classes: 249
+  batch_size: 2
+  num_workers: 2
+  learning_rate: 0.01
+  momentum: 0.9
+  weight_decay: 0.0003
+  init_epochs: 0
+  epochs: 50
+  report_freq: 10
+  warmUp: 15
+
+model:
+  pretrain: ''
+  resume: ''
+  resumelr: ''
+  sample_duration: 64
+  sample_size: 224
+  paralle: False
+  grad_clip: 5.
+dataset:
+  type: 'M'
+  flip: 0.5
+  rotated: 0.5
+  resize: (320, 320)
