@@ -206,7 +206,7 @@ def train(train_queue, valid_queue, model, architect, criterion, optimizer, lr, 
 
     if step % args.report_freq == 0 and local_rank == 0:
       logging.info('epoch:%d, mini-batch:%3d, data time: %.5f, lr = %.5f, loss_CE = %.5f, loss_ARC = %.5f, Accuracy = %.4f' % (
-        epoch + 1, step + 1, lr, data_time.avg, loss_avg.avg, arc_loss_avg.avg, Acc_avg.avg))
+        epoch + 1, step + 1, data_time.avg, lr, loss_avg.avg, arc_loss_avg.avg, Acc_avg.avg))
     end = time.time()
   return Acc_avg.avg, loss_avg.avg
 
