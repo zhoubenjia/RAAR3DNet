@@ -10,3 +10,6 @@
 ```bash
  bash run.sh config/IsoGD.yml  4
 ```
+
+**Some training strategies:**
+- For training the RAAR3D network, it is recommended to train the NI3D network first, and then use the NI3D-trained model as the pre-training model for training the RAAR3D network.
