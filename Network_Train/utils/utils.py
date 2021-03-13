@@ -122,7 +122,7 @@ def save_checkpoint(state, is_best=False, save='./'):
     best_filename = os.path.join(save, 'model_best.pth.tar')
     shutil.copyfile(filename, best_filename)
 
-def load_checkpoint(model, model_path, local_rank=0, optimizer=None):
+def load_checkpoint(model, model_path, optimizer=None):
     # checkpoint = torch.load(model_path, map_location=lambda storage, loc: storage.cuda(local_rank))
     checkpoint = torch.load(model_path, map_location='cpu')
     model.load_state_dict(checkpoint['model'])
@@ -132,8 +132,9 @@ def load_checkpoint(model, model_path, local_rank=0, optimizer=None):
     bestacc = checkpoint['bestacc']
     return model, optimizer, epoch, bestacc
 
-def load_pretrained_checkpoint(model, model_path, local_rank):
-    params = torch.load(model_path, map_location=lambda storage, loc: storage.cuda(local_rank))['model']
+def load_pretrained_checkpoint(model, model_path, local_rank=0):
+    # params = torch.load(model_path, map_location=lambda storage, loc: storage.cuda(local_rank))['model']
+    params = torch.load(model_path, map_location='cpu')['model']
     new_state_dict = OrderedDict()
     for k, v in params.items():
         name = k[7:] if k[:7] == 'module.' else k
@@ -226,9 +227,21 @@ def FeatureMap2Heatmap(x, feature, heatmaps=None, sk=None):
         inp += torch.pow(feature_first_frame[i, :, :], 2).view(feature_first_frame.size(1),feature_first_frame.size(2))
     inp = inp.data.numpy()[::-1]
 
+    # feature_first_frame = y[0, :, 1, :, :].cpu()
+    # inp1 = torch.zeros(feature_first_frame.size(1), feature_first_frame.size(2))
+    # for i in range(feature_first_frame.size(0)):
+    #     inp1 += torch.pow(feature_first_frame[i, :, :], 2).view(feature_first_frame.size(1),feature_first_frame.size(2))
+    # inp1 = inp1.data.numpy()[::-1]
+
     ## feature
     visFeature = []
     for feat in feature:
+        # feature_frame = feat[0, :, 1, :, :].cpu()
+        # heatmap = torch.zeros(feature_frame.size(1), feature_frame.size(2))
+        # for i in range(feature_frame.size(0)):
+        #     heatmap += torch.pow(feature_frame[i, :, :], 2).view(feature_frame.size(1),
+        #                                                                 feature_frame.size(2))
+
         Time_heatmap = torch.zeros(feat.size(3), feat.size(4))
         for j in range(feat.size(2)):
             feature_frame = feat[0, :, j, :, :].cpu()
@@ -238,10 +251,10 @@ def FeatureMap2Heatmap(x, feature, heatmaps=None, sk=None):
             Time_heatmap += heatmap
         visFeature.append(Time_heatmap.data.numpy()[::-1])
 
-    if heatmaps:
+    if heatmaps is not None:
         heatmaps = heatmaps[0, 0, 32, :, :].cpu()
         heatmaps = heatmaps.data.numpy()[::-1]
-    if sk:
+    if sk is not None:
         sk = sk[0, 0, 32, :, :].cpu()
         sk = sk.data.numpy()[::-1]
 
