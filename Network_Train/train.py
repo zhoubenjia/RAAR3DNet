@@ -15,7 +15,7 @@ import torch.backends.cudnn as cudnn
 from utils.visualizer import Visualizer
 from config import Config
 from lib import IsoGDData, DistributedSampler
-from lib import I3D, NI3D, RAAR3D, genotype
+from lib import NI3D, RAAR3D, genotype
 import torch.distributed as dist
 from utils import (AvgrageMeter, calculate_accuracy, create_exp_dir, print_func,
                    count_parameters_in_MB, load_checkpoint, save_checkpoint, data_prefetcher, ClassAcc,
