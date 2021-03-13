@@ -15,7 +15,7 @@ import torch.backends.cudnn as cudnn
 from utils.visualizer import Visualizer
 from config import Config
 from lib import IsoGDData, DistributedSampler
-from lib import NI3D, RAAR3D, genotype
+from lib import I3D, NI3D, RAAR3D, genotype
 import torch.distributed as dist
 from utils import (AvgrageMeter, calculate_accuracy, create_exp_dir, print_func,
                    count_parameters_in_MB, load_checkpoint, save_checkpoint, data_prefetcher, ClassAcc,
@@ -191,7 +191,7 @@ def main(local_rank, nprocs, args):
 
 def train(train_queue, model, criterion, MSELoss, optimizer, lr, epoch, local_rank):
     model.train()
-    lossCE_avg = AvgrageMeter()
+    loss_avg = AvgrageMeter()
     Acc_avg = AvgrageMeter()
     data_time = AvgrageMeter()
     end = time.time()
@@ -216,7 +216,7 @@ def train(train_queue, model, criterion, MSELoss, optimizer, lr, epoch, local_ra
         else:
             reduced_loss, reduced_acc = loss, accuracy
 
-        lossCE_avg.update(reduced_loss.item(), n)
+        loss_avg.update(reduced_loss.item(), n)
         Acc_avg.update(reduced_acc.item(), n)
 
         optimizer.zero_grad()
@@ -230,7 +230,7 @@ def train(train_queue, model, criterion, MSELoss, optimizer, lr, epoch, local_ra
                 'Mini-Batch': '{:0>5d}/{:0>5d}'.format(step + 1, len(train_queue.dataset) // (args.batch_size * args.nprocs)),
                 'Data time': round(data_time.avg, 4),
                 'Lr': lr,
-                'LossEC': round(lossCE_avg.avg, 3),
+                'Total Loss': round(loss_avg.avg, 3),
                 'Acc': round(Acc_avg.avg, 4)
             }
             print_func(log_info)
