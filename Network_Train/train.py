@@ -15,7 +15,7 @@ import torch.backends.cudnn as cudnn
 from utils.visualizer import Visualizer
 from config import Config
 from lib import IsoGDData, DistributedSampler
-from lib import I3D, NI3D, genotype
+from lib import I3D, NI3D, RAAR3D, genotype
 import torch.distributed as dist
 from utils import (AvgrageMeter, calculate_accuracy, create_exp_dir, print_func,
                    count_parameters_in_MB, load_checkpoint, save_checkpoint, data_prefetcher, ClassAcc,
@@ -78,11 +78,17 @@ def main(local_rank, nprocs, args):
     if local_rank == 0:
         logging.info("args = %s", args)
 
-    model = NI3D(num_classes=GESTURE_CLASSES, genotype=genotype, local_rank=local_rank, pretrained=args.pretrain)
+    if args.Network == 'NI3D':
+        model = NI3D(args, num_classes=GESTURE_CLASSES, genotype=genotype, pretrained=args.pretrain)
+    elif args.Network == 'RAAR3D':
+        model = RAAR3D(args, num_classes=GESTURE_CLASSES, genotype=genotype, pretrained=args.pretrain)
+
     model = model.cuda(local_rank)
 
     criterion = nn.CrossEntropyLoss()
     criterion = criterion.cuda(local_rank)
+    MSELoss = torch.nn.MSELoss()
+
     optimizer = torch.optim.SGD(
         model.parameters(),
         args.learning_rate,
@@ -94,7 +100,7 @@ def main(local_rank, nprocs, args):
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=warm_up_with_cosine_lr)
 
     if args.resume:
-        model, optimizer, strat_epoch, best_acc = load_checkpoint(model, optimizer, args.resume, local_rank)
+        model, optimizer, strat_epoch, best_acc = load_checkpoint(model, args.resume, optimizer)
         logging.info("The network will resume training.")
         logging.info("Start Epoch: {}, Learning rate: {}, Best accuracy: {}".format(strat_epoch, [g['lr'] for g in
                                                                                                   optimizer.param_groups],
@@ -138,7 +144,7 @@ def main(local_rank, nprocs, args):
                           args.splits + '/{0}_train_lst.txt'.format(modality), modality, args.sample_duration,
                           args.sample_size, phase='train')
     valid_data = Datasets(args, args.data,
-                          args.splits + '/{0}_valid_lst.txt'.format(modality), modality, args.sample_duration,
+                          args.splits + '/{0}_val_lst.txt'.format(modality), modality, args.sample_duration,
                           args.sample_size, phase='valid')
     if args.distp:
         train_sampler = DistributedSampler(train_data)
@@ -153,7 +159,7 @@ def main(local_rank, nprocs, args):
                                               sampler=valid_sampler, pin_memory=True, drop_last=True)
 
     if args.eval_only:
-        valid_acc, valid_obj = infer(valid_queue, model, criterion, local_rank, 1)
+        valid_acc, valid_obj = infer(valid_queue, model, criterion, MSELoss, local_rank, 1)
         logging.info('valid_acc %f', valid_acc)
         return
 
@@ -165,9 +171,9 @@ def main(local_rank, nprocs, args):
         lr = scheduler.get_lr()[0]
         model.drop_path_prob = args.drop_path_prob * epoch / args.epochs
 
-        train_acc, train_obj = train(train_queue, model, criterion, optimizer, lr, epoch, local_rank)
+        train_acc, train_obj = train(train_queue, model, criterion, MSELoss, optimizer, lr, epoch, local_rank)
 
-        valid_acc, valid_obj = infer(valid_queue, model, criterion, local_rank, epoch)
+        valid_acc, valid_obj = infer(valid_queue, model, criterion, MSELoss, local_rank, epoch)
 
         scheduler.step()
 
@@ -183,18 +189,23 @@ def main(local_rank, nprocs, args):
                      'optimizer': optimizer.state_dict(), 'epoch': epoch + 1, 'bestacc': best_acc}
             save_checkpoint(state, isbest, args.save)
 
-
-def train(train_queue, model, criterion, optimizer, lr, epoch, local_rank):
+def train(train_queue, model, criterion, MSELoss, optimizer, lr, epoch, local_rank):
     model.train()
-    loss_avg = AvgrageMeter()
+    lossCE_avg = AvgrageMeter()
     Acc_avg = AvgrageMeter()
     data_time = AvgrageMeter()
     end = time.time()
-    for step, (inputs, target) in enumerate(train_queue):
+    for step, (inputs, target, heatmap) in enumerate(train_queue):
         data_time.update(time.time() - end)
         inputs, target = map(lambda x: x.cuda(local_rank, non_blocking=True), [inputs, target])
-        logits, feature = model(inputs)
-        loss = criterion(logits, target)
+        if args.Network == 'RAAR3D':
+            logits, sk, feature = model(inputs)
+            loss_mse = MSELoss(sk, heatmap.cuda(local_rank, non_blocking=True))
+            loss_ce = criterion(logits, target)
+            loss = loss_ce + args.mse_weight * loss_mse
+        else:
+            logits, feature = model(inputs)
+            loss = criterion(logits, target)
 
         n = inputs.size(0)
         accuracy = calculate_accuracy(logits, target)
@@ -205,7 +216,7 @@ def train(train_queue, model, criterion, optimizer, lr, epoch, local_rank):
         else:
             reduced_loss, reduced_acc = loss, accuracy
 
-        loss_avg.update(reduced_loss.item(), n)
+        lossCE_avg.update(reduced_loss.item(), n)
         Acc_avg.update(reduced_acc.item(), n)
 
         optimizer.zero_grad()
@@ -219,32 +230,45 @@ def train(train_queue, model, criterion, optimizer, lr, epoch, local_rank):
                 'Mini-Batch': '{:0>5d}/{:0>5d}'.format(step + 1, len(train_queue.dataset) // (args.batch_size * args.nprocs)),
                 'Data time': round(data_time.avg, 4),
                 'Lr': lr,
-                'LossEC': round(loss_avg.avg, 3),
+                'LossEC': round(lossCE_avg.avg, 3),
                 'Acc': round(Acc_avg.avg, 4)
             }
             print_func(log_info)
-
-            visual = FeatureMap2Heatmap(inputs, feature)
-            vis.featuremap('Input', visual[0])
+            if args.Network == 'RAAR3D':
+                visual = FeatureMap2Heatmap(inputs, feature, heatmap, sk)
+                vis.featuremap('Input', visual[0])
+                vis.featuremap('HEATMAP', visual[2])
+                vis.featuremap('SK', visual[3])
+            else:
+                visual = FeatureMap2Heatmap(inputs, feature)
+                vis.featuremap('Input', visual[0])
             for i, feat in enumerate(visual[1]):
                 vis.featuremap('feature{}'.format(i + 1), feat)
-
+        end = time.time()
     return Acc_avg.avg, loss_avg.avg
 
 
 @torch.no_grad()
-def infer(valid_queue, model, criterion, local_rank, epoch):
+def infer(valid_queue, model, criterion, MSELoss, local_rank, epoch):
     model.eval()
     loss_avg = AvgrageMeter()
     Acc_avg = AvgrageMeter()
     infer_time = AvgrageMeter()
     class_acc = ClassAcc(GESTURE_CLASSES)
-    for step, (inputs, target) in enumerate(valid_queue):
+    for step, (inputs, target, heatmap) in enumerate(valid_queue):
+        n = inputs.size(0)
         inputs, target = map(lambda x: x.cuda(local_rank, non_blocking=True), [inputs, target])
         end = time.time()
-        logits, _ = model(inputs)
+        if args.Network == 'RAAR3D':
+            logits, sk, feature = model(inputs)
+            loss_mse = MSELoss(sk, heatmap)
+            loss_ce = criterion(logits, target)
+            loss = loss_ce + args.mse_weight * loss_mse
+        else:
+            logits, feature = model(inputs)
+            loss = criterion(logits, target)
+
         infer_time.update(time.time() - end)
-        loss = criterion(logits, target)
 
         accuracy = calculate_accuracy(logits, target)
         if args.distp:
@@ -255,13 +279,12 @@ def infer(valid_queue, model, criterion, local_rank, epoch):
             reduced_loss, reduced_acc = loss, accuracy
             class_acc.update(logits, target)
 
-        n = inputs.size(0)
         loss_avg.update(reduced_loss.item(), n)
         Acc_avg.update(reduced_acc.item(), n)
 
         if step % args.report_freq == 0 and local_rank == 0:
             log_info = {
-                'Epoch': epoch,
+                'Epoch': epoch + 1,
                 'Mini-Batch': '{:0>4d}/{:0>4d}'.format(step + 1, len(valid_queue.dataset) // (args.batch_size * args.nprocs)),
                 'Inference time': round(infer_time.avg, 4),
                 'LossEC': round(loss_avg.avg, 3),
