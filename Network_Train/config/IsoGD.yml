@@ -1,0 +1,30 @@
+common:
+  data: /disk2/yuanqi/frames
+  splits: /disk2/bjzhou/Dataset/IsoGD/dataset_splits
+
+  #-------basic Hyparameter----------
+  visname: 'IsoGD_NI3D'
+  num_classes: 249
+  batch_size: 6 # Pre GPU
+  num_workers: 2
+  learning_rate: 0.01
+  momentum: 0.9
+  weight_decay: 0.0003
+  init_epochs: 0
+  epochs: 50
+  report_freq: 10
+  warm_up_epochs: 5
+
+model:
+  pretrain: ''
+  resume: ''
+  resumelr: ''
+  sample_duration: 64
+  sample_size: 224
+  grad_clip: 5.
+  SYNC_BN: 1
+dataset:
+  type: 'M'
+  flip: 0.5
+  rotated: 0.5
+  resize: (320, 320)
