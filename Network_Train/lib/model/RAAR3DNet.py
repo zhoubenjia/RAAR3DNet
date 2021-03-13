@@ -10,9 +10,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 from .Operations import *
 from torch.autograd import Variable
-import pdb
+import pdb, logging
 from utils import load_pretrained_checkpoint
-import logging
+
 class Cell(nn.Module):
 
     def __init__(self, genotype, C_prev_prev, C_prev, C, reduction_prev, normal):
@@ -175,6 +175,124 @@ class Unit3D(nn.Module):
         if self._activation_fn is not None:
             x = self._activation_fn(x)
         return x
+def tensor_split(t):
+    arr = torch.split(t.permute(0, 1, 3, 4, 2), 1, dim=4)  # dim = 4 is time dimension
+    arr = [x.view(x.size()[:-1]) for x in arr]
+    return arr
+
+def tensor_merge(arr):
+    arr = [x.view(list(x.size()) + [1]) for x in arr]
+    t = torch.cat(arr, dim=4)
+    return t.permute(0, 1, 4, 2, 3)
+
+def conv3x3(in_planes, out_planes, stride=1):
+    """3x3 convolution with padding"""
+    return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride,
+                     padding=1, bias=False)
+class BasicSKBlock(nn.Module):
+    """
+    Basic Heatmap Generating Block
+    """
+
+    def __init__(self, inplanes, planes):
+        super(BasicSKBlock, self).__init__()
+        self.conv1 = conv3x3(inplanes, inplanes)
+        self.bn1 = nn.BatchNorm2d(inplanes)
+        self.relu = nn.ReLU(inplace=True)
+        self.conv2 = conv3x3(inplanes, planes)
+        self.bn2 = nn.BatchNorm2d(planes)
+
+    def forward(self, inp):
+        def run(x):
+            out = self.conv1(x)
+            out = self.bn1(out)
+            out = self.relu(out)
+            out = self.conv2(out)
+            out = self.bn2(out)
+            out = self.relu(out)
+            return out
+
+        inp = tensor_split(inp)
+        inp = [run(x) for x in inp]
+        return tensor_merge(inp)
+
+class SATT_Module(nn.Module):
+    def __init__(self):
+        super(SATT_Module, self).__init__()
+        self.conv1d_ly1 = nn.Conv1d(2, 1, 1, bias=False)
+        self.conv1d_ly1.weight.data = torch.FloatTensor([[[1.0], [0.0]]])
+        self.hapooling = nn.MaxPool2d(kernel_size=2)
+
+    def forward(self, d_arr, gmap):
+        def run_layer_on_arr(arr, l):
+            return [l(x) for x in arr]
+
+        def hand_attention(t, gmap, conlay):
+            """
+            SSATT in the paper
+            hand attention
+            :t: tensor
+            :gmap: gaussian heat map
+            :conlay: conv1D layer, in_place = 2, out_plane = 1
+            """
+
+            def oneconv(a, b):
+                s = a.size()  # size ncwh a:torch.Size([2, 192, 28, 28]) b:torch.Size([2, 1, 28, 28])
+                c = torch.cat([a.contiguous().view(s[0], -1, 1), b.contiguous().view(s[0], -1, 1)], dim=2)
+                c = conlay(c.permute(0, 2, 1)).permute(0, 2, 1)
+                return c.view(s)
+
+            tarr = tensor_split(t)
+            garr = tensor_split(gmap)
+
+            while tarr[0].size()[3] < garr[0].size()[3]:  # keep feature map and heatmap the same size
+                garr = run_layer_on_arr(garr, self.hapooling)
+
+            attarr = [a * (b + torch.ones(a.size()).cuda()) for a, b in zip(tarr, garr)]  # changed by yuanqi (add 1)
+
+            satt = [oneconv(a, b) for a, b in zip(tarr, attarr)]
+            return tensor_merge(satt)
+        s_arr = hand_attention(d_arr, gmap, self.conv1d_ly1)
+        return s_arr
+
+class DATT_Module(nn.Module):
+    def __init__(self, w, inplanes):
+        super(DATT_Module, self).__init__()
+        self._w = w
+        self.rpconv1d = nn.Conv1d(2, 1, 1, bias=False)  # Rank Pooling Conv1d, Kernel Size 2x1x1
+        self.rpconv1d.weight.data = torch.FloatTensor([[[1.0], [0.0]]])
+        self.bnrp = nn.BatchNorm3d(inplanes)  # BatchNorm Rank Pooling
+        self.relu = nn.ReLU(inplace=True)
+
+    def forward(self, x):
+        if self._w < 1:
+            return x
+        def tensor_arr_rp(arr):
+            l = len(arr)
+            def tensor_rankpooling(subarr):  # Rank Pooling
+                def get_w(N):
+                    return [float(i) * 2 - N - 1 for i in range(1, N + 1)]
+
+                re = torch.zeros(subarr[0].size()).cuda()
+                for a, b in zip(subarr, get_w(len(subarr))):
+                    re += a * b
+                return re
+
+            arr = (self._w - 1) * [torch.zeros(arr[0].size()).cuda()] + arr  # padding
+            arr = [tensor_rankpooling(arr[i:i + self._w]) for i in range(l)]
+            return arr
+
+        def oneconv(a, b):
+            s = a.size()
+            c = torch.cat([a.contiguous().view(s[0], -1, 1), b.contiguous().view(s[0], -1, 1)], dim=2)
+            c = self.rpconv1d(c.permute(0, 2, 1)).permute(0, 2, 1)
+            return c.view(s)
+
+        arrrp = tensor_arr_rp(tensor_split(x))
+        arrrp = self.relu(self.bnrp(tensor_merge(arrrp)))
+        arrrp = [(a + torch.ones(a.size()).cuda()) * b for a, b in zip(tensor_split(arrrp), tensor_split(x))]
+        arrrp = [oneconv(a, b) for a, b in zip(tensor_split(x), arrrp)]
+        return tensor_merge(arrrp)
 
 class InceptionI3d(nn.Module):
     VALID_ENDPOINTS = (
@@ -192,7 +310,7 @@ class InceptionI3d(nn.Module):
         'Predictions',
     )
 
-    def __init__(self, args, num_classes, genotype, spatial_squeeze=True,
+    def __init__(self, args, num_classes,  genotype, paralle=False, spatial_squeeze=True,
                  final_endpoint='Logits', name='inception_i3d', in_channels=3, dropout_keep_prob=0.5):
         if final_endpoint not in self.VALID_ENDPOINTS:
             raise ValueError('Unknown final endpoint %s' % final_endpoint)
@@ -203,6 +321,16 @@ class InceptionI3d(nn.Module):
         self._spatial_squeeze = spatial_squeeze
         self._final_endpoint = final_endpoint
         self.logits = None
+        self.paralle = paralle
+        self.paralle_conv1d = nn.Conv1d(2, 1, 1)
+        self.paralle_conv1d.weight.data = torch.FloatTensor([[[0.5], [0.5]]])  # ????????
+
+        self.datt_Module_1 = DATT_Module(w=5, inplanes=192)
+        self.satt_Module_1 = SATT_Module()
+        self.datt_Module_2 = DATT_Module(w=5, inplanes=256)
+        self.satt_Module_2 = SATT_Module()
+        self.datt_Module_3 = DATT_Module(w=5, inplanes=512)
+        self.satt_Module_3 = SATT_Module()
 
         if self._final_endpoint not in self.VALID_ENDPOINTS:
             raise ValueError('Unknown final endpoint %s' % self._final_endpoint)
@@ -235,6 +363,7 @@ class InceptionI3d(nn.Module):
 
         end_point = 'cell1'
         self.end_points[end_point] = nn.ModuleList()
+        self.SKB1 = BasicSKBlock(3, 1)
         C_curr = 64
         C_prev_prev, C_prev, C_curr = C_curr * 3, C_curr * 3, C_curr
         reduction_prev = False
@@ -249,6 +378,7 @@ class InceptionI3d(nn.Module):
         if self._final_endpoint == end_point: return
 
         end_point = 'cell2'
+        self.SKB2 = BasicSKBlock(4, 1)
         self.end_points[end_point] = nn.ModuleList()
         C_prev_prev, C_prev, C_curr = C_prev, C_prev, C_curr
         for i in range(args.middle_layer_num):
@@ -269,6 +399,7 @@ class InceptionI3d(nn.Module):
         if self._final_endpoint == end_point: return
 
         end_point = 'cell3'
+        self.SKB3 = BasicSKBlock(4, 1)
         self.end_points[end_point] = nn.ModuleList()
         C_prev_prev, C_prev, C_curr = C_prev, C_prev, C_curr
         reduction_prev = False
@@ -309,22 +440,47 @@ class InceptionI3d(nn.Module):
             self.add_module(k, self.end_points[k])
 
     def forward(self, x):
+        inp = x
+        def merge_skmap(a, b):
+            a_arr = tensor_split(a)
+            b_arr = tensor_split(b)
+            c = [torch.cat([am, bm], dim=1) for am, bm in zip(a_arr, b_arr)]
+            return tensor_merge(c)
+        gmap1 = self.SKB1(inp)
+        gmap2 = self.SKB2(merge_skmap(inp, gmap1))
+        gmap3 = self.SKB3(merge_skmap(inp, gmap2))
+
         for end_point in self.VALID_ENDPOINTS:
             if end_point in self.end_points:
                 if end_point == 'cell1':
-                    s0 = s1 = x
-                    for ii, cell in enumerate(self._modules[end_point]):
-                        s0, s1 = s1, cell(s0, s1)
-                    x = s1
+                    # gmap1 = self.SKB1(inp)
                     f1 = x
-                elif end_point == 'cell2':
-                    s0 = s1 = x
+                    if not self.paralle:
+                        d_arr = self.datt_Module_1(x)
+                        s_arr = self.satt_Module_1(d_arr, gmap3)
+                    f2 = s_arr
+                    s0 = s1 = x + s_arr
+                    f3 = s0
                     for ii, cell in enumerate(self._modules[end_point]):
                         s0, s1 = s1, cell(s0, s1)
                     x = s1
-                    f2 = x
+                    f4 = x
+                elif end_point == 'cell2':
+                    # gmap2 = self.SKB2(merge_skmap(inp, gmap1))
+                    if not self.paralle:
+                        d_arr = self.datt_Module_2(x)
+                        s_arr = self.satt_Module_2(d_arr, gmap3)
+                    s0 = s1 = x + s_arr
+                    for ii, cell in enumerate(self._modules[end_point]):
+                        s0, s1 = s1, cell(s0, s1)
+                    x = s1
+                    f5 = x
                 elif end_point == 'cell3':
-                    s0 = s1 = x
+                    # gmap3 = self.SKB3(merge_skmap(inp, gmap2))
+                    if not self.paralle:
+                        d_arr = self.datt_Module_3(x)
+                        s_arr = self.satt_Module_3(d_arr, gmap3)
+                    s0 = s1 = x + s_arr
                     for ii, cell in enumerate(self._modules[end_point]):
                         s0, s1 = s1, cell(s0, s1)
                     x = s1
@@ -333,17 +489,16 @@ class InceptionI3d(nn.Module):
 
         x = self.logits(self.dropout(self.avg_pool(x)))
         if self._spatial_squeeze:
-            logits = x.squeeze()
+            logits = x.squeeze(3).squeeze(3)
         # logits is batch X time X classes, which is what we want to work with
-        return logits, (f1, f2)
+        return logits.squeeze(), gmap3, (f1, f2, f3,f4, f5)
 
-def Network(args, num_classes, genotype, pretrained=None):
+def Network(args, num_classes, genotype, pretrained=False):
     Net = InceptionI3d(args, num_classes=num_classes, genotype=genotype)
     if pretrained:
         Net = load_pretrained_checkpoint(Net, pretrained)
         logging.info("Load Pre-trained model state_dict Done !")
     return Net
-
 if __name__ == '__main__':
     import torch
     from collections import namedtuple
@@ -356,7 +511,7 @@ if __name__ == '__main__':
         normal3=[('conv_3x3x3', 1), ('conv_3x3x3', 0), ('conv_3x3x3', 1), ('conv_1x1x1', 2), ('conv_1x1x1', 3),
                  ('conv_1x1x1', 2), ('conv_3x3x3', 1), ('conv_1x1x1', 4)], normal_concat3=range(2, 6))
 
-    model = Network(249, genotype)
-    inputs = torch.randn(2, 3, 32, 224, 224)
+    model = Network(249, genotype).cuda(0)
+    inputs = torch.randn(2, 3, 32, 224, 224).cuda(0)
     output = model(inputs)
-    print(output.shape)
+    print(output[0].shape)
