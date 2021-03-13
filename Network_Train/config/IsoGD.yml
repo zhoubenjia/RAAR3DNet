@@ -6,7 +6,7 @@ common:
   visname: 'IsoGD_NI3D'
   num_classes: 249
   batch_size: 6 # Pre GPU
-  num_workers: 2
+  num_workers: 4
   learning_rate: 0.01
   momentum: 0.9
   weight_decay: 0.0003
@@ -16,6 +16,7 @@ common:
   warm_up_epochs: 5
 
 model:
+  Network: 'NI3D'
   pretrain: ''
   resume: ''
   resumelr: ''
@@ -23,6 +24,10 @@ model:
   sample_size: 224
   grad_clip: 5.
   SYNC_BN: 1
+  mse_weight: 100.0
+  shallow_layer_num: 2
+  middle_layer_num: 5
+  high_layer_num: 2
 dataset:
   type: 'M'
   flip: 0.5
