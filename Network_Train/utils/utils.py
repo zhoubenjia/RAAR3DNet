@@ -226,21 +226,9 @@ def FeatureMap2Heatmap(x, feature, heatmaps=None, sk=None):
         inp += torch.pow(feature_first_frame[i, :, :], 2).view(feature_first_frame.size(1),feature_first_frame.size(2))
     inp = inp.data.numpy()[::-1]
 
-    # feature_first_frame = y[0, :, 1, :, :].cpu()
-    # inp1 = torch.zeros(feature_first_frame.size(1), feature_first_frame.size(2))
-    # for i in range(feature_first_frame.size(0)):
-    #     inp1 += torch.pow(feature_first_frame[i, :, :], 2).view(feature_first_frame.size(1),feature_first_frame.size(2))
-    # inp1 = inp1.data.numpy()[::-1]
-
     ## feature
     visFeature = []
     for feat in feature:
-        # feature_frame = feat[0, :, 1, :, :].cpu()
-        # heatmap = torch.zeros(feature_frame.size(1), feature_frame.size(2))
-        # for i in range(feature_frame.size(0)):
-        #     heatmap += torch.pow(feature_frame[i, :, :], 2).view(feature_frame.size(1),
-        #                                                                 feature_frame.size(2))
-
         Time_heatmap = torch.zeros(feat.size(3), feat.size(4))
         for j in range(feat.size(2)):
             feature_frame = feat[0, :, j, :, :].cpu()
