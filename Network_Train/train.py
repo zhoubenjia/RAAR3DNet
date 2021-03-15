@@ -261,7 +261,7 @@ def infer(valid_queue, model, criterion, MSELoss, local_rank, epoch):
         end = time.time()
         if args.Network == 'RAAR3D':
             logits, sk, feature = model(inputs)
-            loss_mse = MSELoss(sk, heatmap)
+            loss_mse = MSELoss(sk, heatmap.cuda(local_rank, non_blocking=True))
             loss_ce = criterion(logits, target)
             loss = loss_ce + args.mse_weight * loss_mse
         else:
