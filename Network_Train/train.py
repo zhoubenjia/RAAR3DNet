@@ -168,14 +168,16 @@ def main(local_rank, nprocs, args):
             train_sampler.set_epoch(epoch)
             valid_sampler.set_epoch(epoch)
 
-        lr = scheduler.get_lr()[0]
+#         lr = scheduler.get_lr()[0]
+        lr = [g['lr'] for g in optimizer.param_groups]
+
         model.drop_path_prob = args.drop_path_prob * epoch / args.epochs
 
         train_acc, train_obj = train(train_queue, model, criterion, MSELoss, optimizer, lr, epoch, local_rank)
-        vis.plot_many({'train_acc': train_acc, 'loss': train_obj}, 'Train-' + args.type, epoch)
+        vis.plot_many({'train_acc': train_acc, 'loss': train_obj}, 'Train-' + args.type)
         
         valid_acc, valid_obj = infer(valid_queue, model, criterion, MSELoss, local_rank, epoch)
-        vis.plot_many({'valid_acc': valid_acc, 'loss': valid_obj}, 'Valid-' + args.type, epoch)
+        vis.plot_many({'valid_acc': valid_acc, 'loss': valid_obj}, 'Valid-' + args.type)
         
         scheduler.step()
 
