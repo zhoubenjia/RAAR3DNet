@@ -159,7 +159,7 @@ def main(local_rank, nprocs, args):
                                               sampler=valid_sampler, pin_memory=True, drop_last=True)
 
     if args.eval_only:
-        valid_acc, valid_obj = infer(valid_queue, model, criterion, MSELoss, local_rank, 1)
+        valid_acc, valid_obj = infer(valid_queue, model, criterion, MSELoss, local_rank, 0)
         logging.info('valid_acc %f', valid_acc)
         return
 
