@@ -61,7 +61,6 @@ def reduce_mean(tensor, nprocs):
     rt /= nprocs
     return rt
 
-
 def main(local_rank, nprocs, args):
     if not torch.cuda.is_available():
         logging.info('no gpu device available')
